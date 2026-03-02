@@ -3,11 +3,12 @@ from itertools import combinations, permutations
 from typing import List, Tuple
 
 import numpy as np
+import networkx as nx
 import qcelemental as qcel
 
 from . import dimerfrag, v3d
 from .frag import Frag
-from .addIntcos import add_cartesian_intcos, connectivity_from_distances
+from .addIntcos import add_cartesian_intcos, connectivity_from_distances, create_edge_weighted_graph
 from .exceptions import OptError
 from .linearAlgebra import symm_mat_inv
 from .printTools import print_array_string, print_mat_string
@@ -38,6 +39,8 @@ class Molsys(object):
             self._dimer_intcos = dimer_intcos
         else:
             self._dimer_intcos = []
+
+        self.frag_indices  = [list(range(frag.natom)) for frag in fragments]
 
         # fixed body fragments defined by Euler/rotation angles
         # self._fb_fragments = []
@@ -271,16 +274,14 @@ class Molsys(object):
         """cartesian geometry [a0]"""
         geom = np.zeros((self.natom, 3))
         for iF, F in enumerate(self._fragments):
-            row = self.frag_1st_atom(iF)
-            geom[row : (row + F.natom), :] = F.geom
+            geom[self.frag_indices[iF], :]
         return geom
 
     @geom.setter
     def geom(self, newgeom):
         """setter for geometry"""
         for iF, F in enumerate(self._fragments):
-            row = self.frag_1st_atom(iF)
-            F.geom[:] = newgeom[row : (row + F.natom), :]
+            F.geom = newgeom[self.frag_indices[iF], :]
 
     def frag_geom(self, iF):
         """cartesian geometry for fragment i"""
@@ -293,15 +294,17 @@ class Molsys(object):
         """array of masses for all atoms"""
         m = np.zeros(self.natom)
         for iF, F in enumerate(self._fragments):
-            m[self.frag_atom_slice(iF)] = F.masses
+            m[self.frag_indices[iF]] = F.masses
+            # m[self.frag_atom_slice(iF)] = F.masses
         return m
 
     @property
     def Z(self):
-        z = [0 for i in range(self.natom)]
+        z = np.zeros(self.natom)
         for iF, F in enumerate(self._fragments):
-            first = self.frag_1st_atom(iF)
-            z[first : (first + F.natom)] = F.Z
+            z[self.frag_indices[iF]] = F.Z
+            # first = self.frag_1st_atom(iF)
+            # z[first : (first + F.natom)] = F.Z
         return z
 
     # Needed?  may make more sense to loop over fragments
@@ -525,16 +528,19 @@ class Molsys(object):
         if self.nfragments == 1:
             return
         logger.info("\tConsolidating multiple fragments into one for optimization.")
-        Z = self._fragments[0].Z
-        g = self._fragments[0].geom
-        m = self._fragments[0].masses
+
+        geom = np.zeros((self.natom, 3))
+        Z = np.zeros(self.natom)
+        m = np.zeros(self.natom)
+
         for i in range(1, self.nfragments):
-            Z = np.concatenate((Z, self._fragments[i].Z))
-            g = np.concatenate((g, self._fragments[i].geom))
-            m = np.concatenate((m, self._fragments[i].masses))
-        # self._fragments.append(consolidatedFrag)
+            # numpy automatically indexes for us
+            geom[self.frag_indices[i], :] = self._fragments[i].geom
+            Z[self.frag_indices[i]] = self._fragments[i].Z
+            m[self.frag_indices[i]] = self._fragments[i].masses
+
         del self._fragments[:]
-        consolidatedFrag = Frag(Z, g, m)
+        consolidatedFrag = Frag(Z, geom, m)
         self._fragments.append(consolidatedFrag)
 
     def split_fragments_by_connectivity(self, covalent_connect=1.3):
@@ -542,41 +548,28 @@ class Molsys(object):
         tempZ = np.copy(self.Z)
         tempGeom = np.copy(self.geom)
         tempMasses = np.copy(self.masses)
+        G = create_edge_weighted_graph(self.geom, self.Z, covalent_connect)
 
-        newFragments = []
-        for F in self._fragments:
-            C = connectivity_from_distances(F.geom, F.Z, covalent_connect)
-            atomsToAllocate = list(reversed(range(F.natom)))
-            while atomsToAllocate:
-                frag_atoms = [atomsToAllocate.pop()]
+        new_fragments = []
+        logger.info(f"Single molecule {nx.is_connected(G)}")
+        if not nx.is_connected(G):
 
-                more_found = True
-                while more_found:
-                    more_found = False
-                    addAtoms = []
-                    for A in frag_atoms:
-                        for B in atomsToAllocate:
-                            if C[A, B]:
-                                if B not in addAtoms:
-                                    addAtoms.append(B)
-                                more_found = True
-                    for a in addAtoms:
-                        frag_atoms.append(a)
-                        atomsToAllocate.remove(a)
+            # Split into list of connected graphs (molecular fragments)
+            frag_indices = nx.connected_components(G)
 
-                frag_atoms.sort()
-                subNatom = len(frag_atoms)
-                subZ = [0] * subNatom
-                subGeom = np.zeros((subNatom, 3))
-                subMasses = [0] * subNatom
-                for i, I in enumerate(frag_atoms):
-                    subZ[i] = tempZ[I]
-                    subGeom[i, 0:3] = tempGeom[I, 0:3]
-                    subMasses[i] = tempMasses[I]
-                newFragments.append(Frag(subZ, subGeom, subMasses))
+            for index_set in frag_indices:
+                logger.info("Creating fragment: %s", index_set)
+                sorted_indices =sorted(index_set)
+                # Just need to select by row
+                frag_geom = tempGeom[sorted_indices, :]
+                frag_Z = tempZ[sorted_indices]
+                frag_masses = tempMasses[sorted_indices]
+                new_fragments.append(Frag(frag_Z, frag_geom, frag_masses))
+                self.frag_indices.append(sorted_indices)
 
+        logger.info("Frag def %s", self.frag_indices)
         del self._fragments[:]
-        self._fragments = newFragments
+        self._fragments = new_fragments
 
     def purge_interfragment_connectivity(self, C):
         for f1, f2 in permutations([i for i in range(self.nfragments)], 2):
@@ -604,11 +597,15 @@ class Molsys(object):
         logger.debug("\tAugmenting connectivity matrix to join fragments.")
         fragAtoms = []
         geom = self.geom
-        for iF, F in enumerate(self._fragments):
-            fragAtoms.append(range(self.frag_1st_atom(iF), self.frag_1st_atom(iF) + F.natom))
+        # for iF, F in enumerate(self._fragments):
+        #     fragAtoms.append(range(self.frag_1st_atom(iF), self.frag_1st_atom(iF) + F.natom))
+
+        fragAtoms = self.frag_indices
+        logger.info("Fragment Definition %s", fragAtoms)
 
         # Which fragments are connected?
         nF = self.nfragments
+        print("number of fragments %s", nF)
         if self.nfragments == 1:
             return 1.3
 

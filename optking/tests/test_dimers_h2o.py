@@ -111,3 +111,39 @@ def test_dimers_h2o_auto(check_iter, option, iter):  # auto reference pt. creati
     assert psi4.compare_values(MP2minEnergy, E, 6, "MP2 Energy opt from afar, auto")
 
     utils.compare_iterations(json_output, iter, check_iter)
+
+@pytest.mark.dimers
+@pytest.mark.parametrize("option, iter", [("gau_tight", 13), ("interfrag_tight", 11)])
+def test_dimers_h2o_unordered(check_iter, option, iter):  # auto reference pt. creation
+    h2oD = psi4.geometry(
+        """
+      0 1
+      O   0.351675    -1.701049     0.952490
+      O  -0.105182    -1.256691    -1.722965
+      H   0.280638    -1.591779    -0.021801
+      H  -0.464013    -1.272980     1.251761
+      H  -0.397819    -1.918411    -2.373012
+      H   0.334700    -0.589454    -2.277374
+      nocom
+      noreorient
+    """
+    )
+
+    psi4.core.clean_options()
+    psi4_options = {
+        "basis": "aug-cc-pvdz",
+        "geom_maxiter": 40,
+        "frag_mode": "SINGLE",
+        "g_convergence": f"{option}",
+    }
+    psi4.set_options(psi4_options)
+
+    newOptParams = {
+        "interfrag_collinear_tol": 0.2
+    }  # increase to prevent too colinear reference points
+    json_output = optking.optimize_psi4("mp2", **newOptParams)
+
+    E = json_output["energies"][-1]
+    assert psi4.compare_values(MP2minEnergy, E, 6, "MP2 Energy opt from afar, auto")
+
+    utils.compare_iterations(json_output, iter, check_iter)

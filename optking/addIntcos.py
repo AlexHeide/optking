@@ -3,6 +3,7 @@ import logging
 from copy import deepcopy
 from itertools import combinations, permutations, zip_longest
 
+import networkx as nx
 import numpy as np
 import qcelemental as qcel
 
@@ -136,6 +137,21 @@ def connectivity_from_distances(geom, Z, covalent_connect=1.3):
 
     return C
 
+def create_edge_weighted_graph(geom, Z, covalent_connect=1.3):
+
+    G = nx.Graph()
+    nat = geom.shape[0]
+    for (index, z) in enumerate(Z):
+        # symbol = qcel.periodictable.to_symbol(z)
+        G.add_node(index)  # , {"Z": z, "symbol": symbol, "index": index})
+
+    for (i, j) in combinations(range(nat), 2):
+        R = v3d.dist(geom[i], geom[j])
+        Rcov = qcel.covalentradii.get(Z[i], missing=4.0) + qcel.covalentradii.get(Z[j], missing=4.0)
+
+        if R < covalent_connect * Rcov:
+            G.add_edge(i, j)
+    return G
 
 def add_auxiliary_bonds(connectivity, intcos, geom, Z):
     """
