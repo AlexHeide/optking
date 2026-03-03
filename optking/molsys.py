@@ -20,7 +20,7 @@ logger = logging.getLogger(f"{log_name}{__name__}")
 
 
 class Molsys(object):
-    def __init__(self, fragments, dimer_intcos=None):
+    def __init__(self, fragments, dimer_intcos=None, frag_indices=[]):
         """The molecular system consisting of a collection of fragments
 
         Parameters
@@ -40,7 +40,10 @@ class Molsys(object):
         else:
             self._dimer_intcos = []
 
-        self.frag_indices  = [list(range(frag.natom)) for frag in fragments]
+        if frag_indices:
+            self.frag_indices = frag_indices
+        else:
+            self.frag_indices  = [list(range(frag.natom)) for frag in fragments]
 
         # fixed body fragments defined by Euler/rotation angles
         # self._fb_fragments = []
@@ -99,10 +102,12 @@ class Molsys(object):
         if "fragments" in qc_molecule:
             for fr in qc_molecule["fragments"]:
                 frags.append(Frag(np.array(z_list)[fr], geom[fr], np.array(masses_list)[fr]))
+            frag_indices = qc_molecule["fragments"]
         else:
             frags.append(Frag(z_list, geom, masses_list))
+            frag_indices = []
 
-        return cls(frags)
+        return cls(frags, frag_indices=frag_indices)
 
     @staticmethod
     def from_psi4(mol, dtype) -> Tuple['Molsys', dict]:
@@ -274,14 +279,14 @@ class Molsys(object):
         """cartesian geometry [a0]"""
         geom = np.zeros((self.natom, 3))
         for iF, F in enumerate(self._fragments):
-            geom[self.frag_indices[iF], :]
+            geom[self.frag_indices[iF], :] = F.geom
         return geom
 
     @geom.setter
     def geom(self, newgeom):
         """setter for geometry"""
         for iF, F in enumerate(self._fragments):
-            F.geom = newgeom[self.frag_indices[iF], :]
+            F._geom = newgeom[self.frag_indices[iF], :]
 
     def frag_geom(self, iF):
         """cartesian geometry for fragment i"""
@@ -533,7 +538,7 @@ class Molsys(object):
         Z = np.zeros(self.natom)
         m = np.zeros(self.natom)
 
-        for i in range(1, self.nfragments):
+        for i in range(0, self.nfragments):
             # numpy automatically indexes for us
             geom[self.frag_indices[i], :] = self._fragments[i].geom
             Z[self.frag_indices[i]] = self._fragments[i].Z
@@ -542,6 +547,7 @@ class Molsys(object):
         del self._fragments[:]
         consolidatedFrag = Frag(Z, geom, m)
         self._fragments.append(consolidatedFrag)
+        self.frag_indices = [list(range(self.natom))]
 
     def split_fragments_by_connectivity(self, covalent_connect=1.3):
         """Split any fragment not connected by bond connectivity."""
@@ -551,25 +557,23 @@ class Molsys(object):
         G = create_edge_weighted_graph(self.geom, self.Z, covalent_connect)
 
         new_fragments = []
-        logger.info(f"Single molecule {nx.is_connected(G)}")
+        new_frag_indices = []
         if not nx.is_connected(G):
 
             # Split into list of connected graphs (molecular fragments)
             frag_indices = nx.connected_components(G)
 
             for index_set in frag_indices:
-                logger.info("Creating fragment: %s", index_set)
                 sorted_indices =sorted(index_set)
                 # Just need to select by row
                 frag_geom = tempGeom[sorted_indices, :]
                 frag_Z = tempZ[sorted_indices]
                 frag_masses = tempMasses[sorted_indices]
                 new_fragments.append(Frag(frag_Z, frag_geom, frag_masses))
-                self.frag_indices.append(sorted_indices)
+                new_frag_indices.append(sorted_indices)
 
-        logger.info("Frag def %s", self.frag_indices)
-        del self._fragments[:]
-        self._fragments = new_fragments
+            self._fragments = new_fragments
+            self.frag_indices = new_frag_indices
 
     def purge_interfragment_connectivity(self, C):
         for f1, f2 in permutations([i for i in range(self.nfragments)], 2):
@@ -601,11 +605,9 @@ class Molsys(object):
         #     fragAtoms.append(range(self.frag_1st_atom(iF), self.frag_1st_atom(iF) + F.natom))
 
         fragAtoms = self.frag_indices
-        logger.info("Fragment Definition %s", fragAtoms)
 
         # Which fragments are connected?
         nF = self.nfragments
-        print("number of fragments %s", nF)
         if self.nfragments == 1:
             return 1.3
 

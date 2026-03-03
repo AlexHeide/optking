@@ -82,11 +82,19 @@ def optimize(o_molsys, computer):
 
     except OptError as error:
         logger.error(error)
-        return opt_object.opt_error_handler(error)
+        try:
+            return opt_object.opt_error_handler(error)
+        except UnboundLocalError:
+            # Could not finish configuration. Abort. Will not contain trajectory or opt info
+            return prepare_opt_output(o_molsys, computer, rxnpath=[], error=error)
 
     except Exception as error:
         logger.error(error)
-        return opt_object.unknown_error_handler(error)
+        try:
+            return opt_object.unknown_error_handler(error)
+        except UnboundLocalError:
+            # Could not finish configuration. Abort. Will not contain trajectory or opt info
+            return prepare_opt_output(o_molsys, computer, rxnpath=[], error=error)
 
 
 class OptimizationManager(stepAlgorithms.OptimizationInterface):
@@ -780,6 +788,18 @@ def make_internal_coords(o_molsys: Molsys, params: op.OptParams):
                 # remove connectivity so that we don't add redundant coordinates
                 # between fragments
                 o_molsys.purge_interfragment_connectivity(connectivity)
+
+            mesg = (
+                "DimerFrag coordinates require contiguous fragments in input. To optimize a "
+                "molecule with non-contiguous fragments please switch to `frag_mode`='single' or "
+                "reorder your molecule."
+            )
+            for iF, frag in enumerate(o_molsys._fragments):
+                f_indices = sorted(o_molsys.frag_indices[iF])
+                f_range = o_molsys.frag_atom_range(iF)
+                for (i, j) in zip(f_indices, f_range):
+                    if i != j:
+                        raise OptError(mesg)
 
             if params.opt_coordinates in ["INTERNAL", "REDUNDANT", "BOTH"]:
                 for iF, F in enumerate(o_molsys.fragments):
